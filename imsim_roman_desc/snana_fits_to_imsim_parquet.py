@@ -34,10 +34,27 @@ class OutputFile:
     # The next mess configures translation from SNANA to the
     # schema of the output files
 
-    general_params = { 'zCMB': 'SIM_REDSHIFT_CMB',
+    general_params = { 'snid_snana': 'SNID',
+                       'ra': 'RA',
+                       'dec': 'DEC',
+                       'zCMB': 'SIM_REDSHIFT_CMB',
                        'mwEBV': 'SIM_MWEBV',
                        'AV': 'SIM_AV',
-                       'RV': 'SIM_RV' }
+                       'RV': 'SIM_RV',
+                       'template_index': 'SIM_TEMPLATE_INDEX',
+                       'vpec': 'SIM_VPEC',
+                       'hostid': 'SIM_HOSTLIB_GALID',
+                       'hostra': 'HOSTGAL_RA',
+                       'hostdec': 'HOSTGAL_DEC',
+                       'hostmag_g': 'HOST_MAG_g',
+                       'hostmag_i': 'HOST_MAG_i',
+                       'hostmag_F': 'HOST_MAG_F',
+                       'snsep': 'HOSTGAL_SNSEP',
+                       'peakmjd': 'PEAKMJD',
+                       'peakmag_g': 'SIM_PEAKMAG_g',
+                       'peakmag_i': 'SIM_PEAKMAG_i',
+                       'peakmag_F': 'SIM_PEAKMAG_F',
+                       }
     
     model_params = { 'SALT2.WFIRST-H17': { 'salt2x0': 'SIM_SALT2x0',
                                            'salt2x1': 'SIM_SALT2x1',
