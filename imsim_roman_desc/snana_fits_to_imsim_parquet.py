@@ -43,12 +43,11 @@ class OutputFile:
                        'RV': 'SIM_RV',
                        'template_index': 'SIM_TEMPLATE_INDEX',
                        'vpec': 'SIM_VPEC',
-                       'hostid': 'SIM_HOSTLIB_GALID',
                        'hostra': 'HOSTGAL_RA',
                        'hostdec': 'HOSTGAL_DEC',
-                       'hostmag_g': 'HOST_MAG_g',
-                       'hostmag_i': 'HOST_MAG_i',
-                       'hostmag_F': 'HOST_MAG_F',
+                       'hostmag_g': 'HOSTGAL_MAG_g',
+                       'hostmag_i': 'HOSTGAL_MAG_i',
+                       'hostmag_F': 'HOSTGAL_MAG_F',
                        'snsep': 'HOSTGAL_SNSEP',
                        'peakmjd': 'PEAKMJD',
                        'peakmag_g': 'SIM_PEAKMAG_g',
@@ -73,9 +72,9 @@ class OutputFile:
                 'ra': ( pyarrow.float64(), 'RA' ),
                 'dec': ( pyarrow.float64(), 'DEC' ),
                 'host_id': ( pyarrow.int64(), 'HOSTGAL_OBJID' ),
-                'model name': ( pyarrow.string(), 'SIM_MODEL_NAME' ),
-                'model params (names)': ( pyarrow.list_( pyarrow.string() ), None ),
-                'model params (values)': ( pyarrow.list_( pyarrow.float32() ), None ),
+                'model_name': ( pyarrow.string(), 'SIM_MODEL_NAME' ),
+                'model_param_names': ( pyarrow.list_( pyarrow.string() ), None ),
+                'model_param_values': ( pyarrow.list_( pyarrow.float32() ), None ),
                 'start_mjd': ( pyarrow.float32(), None ),
                 'end_mjd': ( pyarrow.float32(), None ),
                }
@@ -138,8 +137,8 @@ class OutputFile:
             if modelname not in OutputFile.seen_unknown_models:
                 _logger.warning( f"Unknown model {modelname}, just saving general parameters" )
                 OutputFile.seen_unknown_models.add( modelname )
-        self.maintable['model params (names)'][-1] = list( params.keys() )
-        self.maintable['model params (values)'][-1] = [ headrow[v] for v in params.values() ]
+        self.maintable['model_param_names'][-1] = list( params.keys() )
+        self.maintable['model_param_values'][-1] = [ headrow[v] for v in params.values() ]
 
         # Extract all the spectra
         # Going to assume that the lambdamin, lambdamax, and lambdabin
