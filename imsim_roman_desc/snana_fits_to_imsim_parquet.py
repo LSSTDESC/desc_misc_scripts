@@ -34,25 +34,7 @@ class OutputFile:
     # The next mess configures translation from SNANA to the
     # schema of the output files
 
-    general_params = { 'snid_snana': 'SNID',
-                       'ra': 'RA',
-                       'dec': 'DEC',
-                       'zCMB': 'SIM_REDSHIFT_CMB',
-                       'mwEBV': 'SIM_MWEBV',
-                       'AV': 'SIM_AV',
-                       'RV': 'SIM_RV',
-                       'template_index': 'SIM_TEMPLATE_INDEX',
-                       'vpec': 'SIM_VPEC',
-                       'hostra': 'HOSTGAL_RA',
-                       'hostdec': 'HOSTGAL_DEC',
-                       'hostmag_g': 'HOSTGAL_MAG_g',
-                       'hostmag_i': 'HOSTGAL_MAG_i',
-                       'hostmag_F': 'HOSTGAL_MAG_F',
-                       'snsep': 'HOSTGAL_SNSEP',
-                       'peakmjd': 'PEAKMJD',
-                       'peakmag_g': 'SIM_PEAKMAG_g',
-                       'peakmag_i': 'SIM_PEAKMAG_i',
-                       'peakmag_F': 'SIM_PEAKMAG_F',
+    general_params = { 'template_index': 'SIM_TEMPLATE_INDEX',
                        }
     
     model_params = { 'SALT2.WFIRST-H17': { 'salt2x0': 'SIM_SALT2x0',
@@ -65,6 +47,7 @@ class OutputFile:
                                           }
                      }
     # Keep track of what warnings have already been issued
+
     #  about things with no entry in model_params
     seen_unknown_models = set()
 
@@ -73,10 +56,25 @@ class OutputFile:
                 'dec': ( pyarrow.float64(), 'DEC' ),
                 'host_id': ( pyarrow.int64(), 'HOSTGAL_OBJID' ),
                 'model_name': ( pyarrow.string(), 'SIM_MODEL_NAME' ),
-                'model_param_names': ( pyarrow.list_( pyarrow.string() ), None ),
-                'model_param_values': ( pyarrow.list_( pyarrow.float32() ), None ),
                 'start_mjd': ( pyarrow.float32(), None ),
                 'end_mjd': ( pyarrow.float32(), None ),
+                'zCMB': ( pyarrow.float32(), 'SIM_REDSHIFT_CMB' ),
+                'mwEBV': ( pyarrow.float32(), 'SIM_MWEBV' ),
+                'AV': ( pyarrow.float32(), 'SIM_AV' ),
+                'RV': ( pyarrow.float32(), 'SIM_RV' ),
+                'vpec': ( pyarrow.float32(), 'SIM_VPEC' ),
+                'hostra': ( pyarrow.float64(), 'HOSTGAL_RA' ),
+                'hostdec': ( pyarrow.float64(), 'HOSTGAL_DEC' ),
+                'hostmag_g': ( pyarrow.float32(), 'HOSTGAL_MAG_g' ),
+                'hostmag_i': ( pyarrow.float32(), 'HOSTGAL_MAG_i' ),
+                'hostmag_F': ( pyarrow.float32(), 'HOSTGAL_MAG_F' ),
+                'snsep': ( pyarrow.float32(), 'HOSTGAL_SNSEP' ),
+                'peakmjd': ( pyarrow.float32(), 'PEAKMJD' ),
+                'peakmag_g': ( pyarrow.float32(), 'SIM_PEAKMAG_g' ),
+                'peakmag_i': ( pyarrow.float32(), 'SIM_PEAKMAG_i' ),
+                'peakmag_F': ( pyarrow.float32(), 'SIM_PEAKMAG_F' ),
+                'model_param_names': ( pyarrow.list_( pyarrow.string() ), None ),
+                'model_param_values': ( pyarrow.list_( pyarrow.float32() ), None ),
                }
     trims = { 'SIM_MODEL_NAME' }
 
@@ -151,11 +149,13 @@ class OutputFile:
 
         h5mjds = hdf5group.create_dataset( 'mjd', data=objhdr['MJD'] )
         h5lambdas = hdf5group.create_dataset( 'lambda', data=lambdas )
-
+        h5lambdas.attrs.create( 'units', 'Angstroms' )
+        
         # The -1 is because FITS indexes are 1-offset
         for i, headrow in enumerate(objhdr):
             flam[ i, : ] = specdata[ headrow['PTRSPEC_MIN']-1 : headrow['PTRSPEC_MAX'] ]['SIM_FLAM']
         h5flam = hdf5group.create_dataset( 'flambda', data=flam )
+        h5flam.attrs.create( 'units', 'erg/s/Å/cm²' )
 
         # Add the start and end mjd to the main (summary) table
 
@@ -237,9 +237,7 @@ def main():
             _logger.warning( f"{headfile.name} had 0 length, skipping it" )
             continue
         for row in head:
-            pix = healpy.pixelfunc.ang2pix( args.nside,
-                                            numpy.radians( 90.-row['DEC'] ),
-                                            numpy.radians( 360.-row['RA'] ) )
+            pix = healpy.pixelfunc.ang2pix( args.nside, row['RA'], row['DEC'], lonlat=True )
             if pix not in outputfiles.keys():
                 outputfiles[pix] = OutputFile( pix, outdir, clobber=args.clobber )
     
@@ -265,14 +263,16 @@ def main():
 
         _logger.info( f"...done reading, processing {len(head)} objects." )
         for row in head:
-            phi = numpy.radians( 360. - row['RA'] )
-            theta = numpy.radians( 90. - row['DEC'] )
-            if ( theta < 0 ) or ( theta > numpy.pi ):
-                raise ValueError( f'Bad dec for {snid} : {row["DEC"]}' )
-            if ( phi >= 2*numpy.pi ): phi -= 2*numpy.pi
-            if ( phi < 0 ): phi += 2*numpy.pi
+            # phi = numpy.radians( 360. - row['RA'] )
+            # theta = numpy.radians( 90. - row['DEC'] )
+            # if ( theta < 0 ) or ( theta > numpy.pi ):
+            #     raise ValueError( f'Bad dec for {snid} : {row["DEC"]}' )
+            # if ( phi >= 2*numpy.pi ): phi -= 2*numpy.pi
+            # if ( phi < 0 ): phi += 2*numpy.pi
+            # pix = healpy.pixelfunc.ang2pix( args.nside, theta, phi )
 
-            pix = healpy.pixelfunc.ang2pix( args.nside, theta, phi )
+            pix = healpy.pixelfunc.ang2pix( args.nside, row['RA'], row['DEC'], lonlat=True )
+            
             outputfiles[pix].addsn( row, spechdr, specdata )
 
     # Close out all the files
