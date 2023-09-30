@@ -15,6 +15,7 @@ import pyarrow
 import pyarrow.parquet
 import h5py
 
+import astropy.table
 from astropy.table import Row, Table
 
 # _rundir = pathlib.Path( __file__ ).parent
@@ -36,7 +37,7 @@ class OutputFile:
 
     general_params = { 'template_index': 'SIM_TEMPLATE_INDEX',
                        }
-    
+
     model_params = { 'SALT2.WFIRST-H17': { 'salt2_x0': 'SIM_SALT2x0',
                                            'salt2_x1': 'SIM_SALT2x1',
                                            'salt2_c': 'SIM_SALT2c',
@@ -44,8 +45,16 @@ class OutputFile:
                                            'salt2_alpha': 'SIM_SALT2alpha',
                                            'salt2_beta': 'SIM_SALT2beta',
                                            'salt2_gammaDM': 'SIM_SALT2gammaDM',
-                                          }
-                     }
+                                          },
+                     'SALT3.NIR_WAVEEXT': { 'salt2_x0': 'SIM_SALT2x0',
+                                            'salt2_x1': 'SIM_SALT2x1',
+                                            'salt2_c': 'SIM_SALT2c',
+                                            'salt2_mB': 'SIM_SALT2mB',
+                                            'salt2_alpha': 'SIM_SALT2alpha',
+                                            'salt2_beta': 'SIM_SALT2beta',
+                                            'salt2_gammaDM': 'SIM_SALT2gammaDM',
+                                           }
+                    }
     # Keep track of what warnings have already been issued
 
     #  about things with no entry in model_params
@@ -60,7 +69,7 @@ class OutputFile:
                 'end_mjd': ( pyarrow.float32(), None ),
                 'z_CMB': ( pyarrow.float32(), 'SIM_REDSHIFT_CMB' ),
                 'mw_EBV': ( pyarrow.float32(), 'SIM_MWEBV' ),
-                'mw_extinction_applied': ( pyarrow.bool_(), 'ROB_FIGURE_THIS_OUT' ),
+                'mw_extinction_applied': ( pyarrow.bool_(), '_no_header_keyword', False ),
                 # Also a do not apply flag?
                 'AV': ( pyarrow.float32(), 'SIM_AV' ),
                 'RV': ( pyarrow.float32(), 'SIM_RV' ),
@@ -77,13 +86,13 @@ class OutputFile:
                 'peak_mag_F': ( pyarrow.float32(), 'SIM_PEAKMAG_F' ),
                 # ROB, FIGURE OUT KAPPA
                 'lens_dmu' : ( pyarrow.float32(), 'SIM_LENSDMU' ),
-                'lens_dmu_applied': ( pyarrow_bool_(), 'ROB_FIGURE_THIS_OUT' ),
+                'lens_dmu_applied': ( pyarrow.bool_(), '_no_header_keywrod', False ),
                 'model_param_names': ( pyarrow.list_( pyarrow.string() ), None ),
                 'model_param_values': ( pyarrow.list_( pyarrow.float32() ), None ),
                }
     trims = { 'SIM_MODEL_NAME' }
 
-    
+
     def __init__( self, pix, outdir, clobber=False ):
         self.pix = pix
         self.outdir = pathlib.Path( outdir )
@@ -105,28 +114,35 @@ class OutputFile:
         self.hdf5file = h5py.File( self.hdf5filepath, 'w' )
 
 
-    def addsn( self, headrow, spechdr, specdata ):
-        objhdr = spechdr[ spechdr['SNID'] == headrow['SNID'] ]
+    def addsn( self, headrow, spechdr, specdata, photdata ):
+        spechdrrows = spechdr[ spechdr['SNID'] == headrow['SNID'] ]
         # Irritatingly, the last call will return different types if there
         #   is only one row vs. multiple rows
-        if isinstance( objhdr, Row ):
-            objhdr = Table( objhdr )
-        
-        nmjds = len( objhdr )
+        if isinstance( spechdrrows, Row ):
+            spechdrrows = Table( spechdrrows )
+
+        nmjds = len( spechdrrows )
         if nmjds == 0:
             _logger.warning( f"No mjds for object {headrow['SNID']}" )
             return
 
         hdf5group = self.hdf5file.create_group( str( headrow['SNID'] ) )
-
-        # Extract (most of) the main table data
+        photgroup = hdf5group.create_group( 'photometry' )
         
+        # Extract (most of) the main table data
+
         for key, val in OutputFile.col_map.items():
             if val[1] is not None:
-                if val[1] in OutputFile.trims:
-                    self.maintable[key].append( headrow[ val[1] ].strip() )
+                if val[1] not in headrow.keys():
+                    if len(val) < 3:
+                        raise RuntimeError( f'{val[1]} not in header row and no default supplied' )
+                    actualval = val[2]
                 else:
-                    self.maintable[key].append( headrow[ val[1] ] )
+                    actualval = headrow[ val[1] ]
+                if val[1] in OutputFile.trims:
+                    self.maintable[key].append( actualval.strip() )
+                else:
+                    self.maintable[key].append( actualval )
             else:
                 self.maintable[key].append( None )
 
@@ -143,29 +159,49 @@ class OutputFile:
         self.maintable['model_param_names'][-1] = list( params.keys() )
         self.maintable['model_param_values'][-1] = [ headrow[v] for v in params.values() ]
 
+        # Extract all the photometry
+
+        pd0 = headrow[ 'PTROBS_MIN' ] - 1   # -1 because FITS ranges are all 1-offset
+        pd1 = headrow[ 'PTROBS_MAX' ]       # No -1 since numpy ranges go one past the end
+        subphot = photdata[ pd0 : pd1 ]
+        # Make sure the type is what we want
+        if isinstance( subphot, Row ):
+            subphot = Table( subphot )
+        bands = astropy.table.unique( subphot, keys=['BAND'] )[ 'BAND' ]
+        photmjds = { b: numpy.array( subphot[ subphot['BAND'] == b ][ 'MJD' ] ) for b in bands }
+        photdata = { b: numpy.array( subphot[ subphot['BAND'] == b ][ 'SIM_MAGOBS' ] ) for b in bands }
+
+        h5mags = {}
+        for band in photdata.keys():
+            h5mags[band] = photgroup.create_group( band.strip() )
+            h5mags[band].create_dataset( 'MJD', data=photmjds[ band ] )
+            h5mags[band].create_dataset( 'MAG', data=photdata[ band ] )
+            
         # Extract all the spectra
         # Going to assume that the lambdamin, lambdamax, and lambdabin
         # are the same for all dates for a given object
 
-        headrow0 = objhdr[0]
+        headrow0 = spechdrrows[0]
         nlambdas = headrow0['NBIN_LAM']
         lambdas = numpy.arange( headrow0['LAMMIN']+headrow0['LAMBIN']/2., headrow0['LAMMAX'], headrow0['LAMBIN'] )
         flam = numpy.empty( ( nmjds, nlambdas ), dtype=numpy.float32 )
 
-        h5mjds = hdf5group.create_dataset( 'mjd', data=objhdr['MJD'] )
+        # The -1 is because FITS indexes are 1-offset
+        for i, headrow in enumerate(spechdrrows):
+            flam[ i, : ] = specdata[ headrow['PTRSPEC_MIN']-1 : headrow['PTRSPEC_MAX'] ]['SIM_FLAM']
+
+        h5mjds = hdf5group.create_dataset( 'mjd', data=spechdrrows['MJD'] )
         h5lambdas = hdf5group.create_dataset( 'lambda', data=lambdas )
         h5lambdas.attrs.create( 'units', 'Angstroms' )
-        
-        # The -1 is because FITS indexes are 1-offset
-        for i, headrow in enumerate(objhdr):
-            flam[ i, : ] = specdata[ headrow['PTRSPEC_MIN']-1 : headrow['PTRSPEC_MAX'] ]['SIM_FLAM']
+
         h5flam = hdf5group.create_dataset( 'flambda', data=flam )
+        # These are the standard SNANA units
         h5flam.attrs.create( 'units', 'erg/s/Å/cm²' )
 
         # Add the start and end mjd to the main (summary) table
 
-        self.maintable['start_mjd'][-1] = objhdr[0]['MJD']
-        self.maintable['end_mjd'][-1] = objhdr[-1]['MJD']
+        self.maintable['start_mjd'][-1] = spechdrrows[0]['MJD']
+        self.maintable['end_mjd'][-1] = spechdrrows[-1]['MJD']
 
 
     def finalize( self ):
@@ -173,24 +209,60 @@ class OutputFile:
         self.hdf5file.close()
         pyarrowtable = pyarrow.table( self.maintable, schema=maintable_schema )
         pyarrow.parquet.write_table( pyarrowtable, self.pqfilepath )
-        
+
 
 # ======================================================================
 
+class CustomFormatter( argparse.RawDescriptionHelpFormatter, argparse.ArgumentDefaultsHelpFormatter ):
+    pass
+
 def main():
-    parser = argparse.ArgumentParser( description="Convert SNANA FITS files to Parquet files for DESC+Roman imsim",
-                                      formatter_class=argparse.ArgumentDefaultsHelpFormatter )
+    parser = argparse.ArgumentParser( formatter_class=CustomFormatter,
+                                      description="""
+Convert SNANA FITS files to Parquet+HDF5 files for DESC+Roman imsim.
+
+It will read all the *.HEAD.FITS.gz, *.PHOT.FITS.gz, and *.SPEC.FITS.gz
+files from all the directories given with the -d argument.  It will
+write files to the directory given in the -o argument.  There will be
+two files in the output directory for each healpix that had at least one
+object, snana_<healpix>.parquet and snana_<healpix>.hdf5.
+
+The .parquet file has summary information about what objects there, one
+row for each obgject.
+
+The .hdf5 file has the actual data.  At the top level, it will have one
+HDF5 group for each id (corresponding to the "id" column in the .parquet
+file).  The structure under that is:
+
+<id>: a group whose name is the object
+  lambda: a ( nlambda ) array with the wavelengths
+     attribute: units, string, the units ( always Angstroms )
+
+  mjd: a ( nmjd ) array with the MJDs
+
+  flambda: dataset, a ( nmjd , lambda ) array with fluxes
+     attribute: units, string, the units ( always erg/s/Å/cm² )
+
+  photometry: a group that contains one subgroup for each band
+     <band>: a group whose name specifies the band of the photometrey
+        <mjd>: a dataset, a ( nphot ) array with mjds
+        <mag>: a dataset, a ( nphot ) array with magnitudes
+
+The mjds of photometry are not necessarily the same as the mjds of
+spectroscopy (which is why the group structure is what it is); in
+general, there will be more epochs with photometry, as epochs that have
+effectively 0 flux (indicated by a very large magnitude, over 90) don't
+have spectra at all.
+
+""" )
     parser.add_argument( '-d', '--directories', nargs='+', required=True,
-                         help="Directories to find the HEAD and SPEC fits files" )
+                         help="Directories to find the SNANA data files (HEAD, PHOT, SPEC)" )
     # parser.add_argument( '-f', '--files', default=[], nargs='+',
     #                      help="Names of HEAD.fits[.[fg]z] files; default is to read all in directory" )
     parser.add_argument( '-n','--nside', default=32, type=int, help="nside for healpix (ring)" )
     parser.add_argument( '-o', '--outdir', default='.', help="Where to write output files." )
     parser.add_argument( '--verbose', action='store_true', default=False,
                          help="Set log level to DEBUG (default INFO)" )
-    parser.add_argument( '-z', '--zeropoint', default=8.9, type=float,
-                         help="Zeropoint to move from magnitudes to fluxes" )
-    parser.add_argument( '-u', '--flux-units', default='Jy', help="Units of flux (this should match the zeropoint!)" )
     parser.add_argument( '-c', '--clobber', default=False, action='store_true', help="Overwrite existing files?" )
     args = parser.parse_args()
 
@@ -202,17 +274,18 @@ def main():
     # All input files
     headfiles = []
     specfiles = []
+    photfiles = []
 
     # Output files (OutputFile objects), indexed by healpix
     outputfiles = {}
-    
+
     # Collect all the head and spec files
 
     for direc in args.directories:
         direc = pathlib.Path( direc )
         localheadfiles = list( direc.glob( '*HEAD.FITS.gz' ) )
         headfiles.extend( localheadfiles )
-        
+
     headre = re.compile( '^(.*)HEAD\.FITS\.gz' )
     for headfile in headfiles:
         direc = headfile.parent
@@ -220,11 +293,15 @@ def main():
         if match is None:
             raise ValueError( f"Failed to parse {headfile.name} for *HEAD.FITS.gz" )
         specfile = direc / f"{match.group(1)}SPEC.FITS.gz"
+        photfile = direc / f"{match.group(1)}PHOT.FITS.gz"
         if not headfile.is_file():
             raise FileNotFoundError( f"Can't read {headfile}" )
         if not specfile.is_file():
             raise FileNotFoundError( f"Can't read {specfile}" )
+        if not photfile.is_file():
+            raise FileNotFoundError( f"Can't read {photfile}" )
         specfiles.append( specfile )
+        photfiles.append( photfile )
 
     # Make one pass through the HEAD files to figure out which healpix
     # we need, and open all the HDF5 files.  (TODO: this may not
@@ -245,23 +322,24 @@ def main():
             pix = healpy.pixelfunc.ang2pix( args.nside, row['RA'], row['DEC'], lonlat=True )
             if pix not in outputfiles.keys():
                 outputfiles[pix] = OutputFile( pix, outdir, clobber=args.clobber )
-    
+
     _logger.info( f"Found {len(outputfiles)} different healpix" )
-        
+
     _logger.debug( f'Headfiles: {[headfiles]}' )
     _logger.debug( f'Photfiles: {[specfiles]}' )
 
     # Now go through all of the HEAD/SPEC files, adding the relevant
     # data for each object to the correct OutputFile (based on healpix)
-    
+
     _logger.info( f'Reading {len(headfiles)} SNANA HEAD/SPEC files' )
 
-    for headfile, specfile in zip( headfiles, specfiles ):
+    for headfile, specfile, photfile in zip( headfiles, specfiles, photfiles ):
         _logger.info( f"Reading {headfile}" )
 
         head = Table.read( headfile, memmap=False )
         spechdr = Table.read( specfile, hdu=1, memmap=False )
         specdata = Table.read( specfile, hdu=2, memmap=False )
+        photdata = Table.read( photfile, hdu=1, memmap=False )
 
         head['SNID'] = head['SNID'].astype( numpy.int64 )
         spechdr['SNID'] = spechdr['SNID'].astype( numpy.int64 )
@@ -277,19 +355,19 @@ def main():
             # pix = healpy.pixelfunc.ang2pix( args.nside, theta, phi )
 
             pix = healpy.pixelfunc.ang2pix( args.nside, row['RA'], row['DEC'], lonlat=True )
-            
-            outputfiles[pix].addsn( row, spechdr, specdata )
+
+            outputfiles[pix].addsn( row, spechdr, specdata, photdata )
 
     # Close out all the files
 
     for pix, outputfile in outputfiles.items():
         outputfile.finalize()
-    
+
     _logger.info( "Done." )
-        
+
 # ======================================================================
 
 if __name__ == "__main__":
     main()
 
-    
+
