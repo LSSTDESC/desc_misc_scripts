@@ -7,6 +7,7 @@ import re
 import copy
 import pathlib
 import logging
+import multiprocessing
 import argparse
 import numpy
 import healpy
@@ -31,7 +32,7 @@ _logger.setLevel( logging.INFO )
 # ======================================================================
 # Encapsulates all the data for one healpix
 
-class OutputFile:
+class HealPixProcessor:
     # The next mess configures translation from SNANA to the
     # schema of the output files
 
@@ -93,28 +94,72 @@ class OutputFile:
     trims = { 'SIM_MODEL_NAME' }
 
 
-    def __init__( self, pix, outdir, clobber=False ):
+    def __init__( self, pix, nside, outdir, headfiles, photfiles, specfiles, clobber=False ):
         self.pix = pix
+        self.nside = nside
         self.outdir = pathlib.Path( outdir )
         self.hdf5filepath = outdir / f'snana_{pix}.hdf5'
         self.pqfilepath = outdir / f'snana_{pix}.parquet'
 
+        self.headfiles = headfiles
+        self.photfiles = photfiles
+        self.specfiles = specfiles
+        self.clobber = clobber
+
+        self.logger = logging.getLogger( str(pix) )
+        logout = logging.FileHandler( f'{pix}.log' )
+        formatter = logging.Formatter( f'[%(asctime)s - %(levelname)s] - %(message)s', datefmt='%Y-%m-%d %H:%M:%S' )
+        logout.setFormatter( formatter )
+        self.logger.addHandler( logout )
+        self.logger.setLevel( logging.INFO )
+
+
+    def go( self ):
+        self.logger.info( f"Starting process for heaplix {self.pix}" )
+
         if self.pqfilepath.exists():
-            if clobber:
+            if self.clobber:
                 self.pqfilepath.unlink()
             else:
                 raise RuntimeError( f'{self.pqfilepath} exists, not clobbering.' )
         if self.hdf5filepath.exists():
-            if clobber:
+            if self.clobber:
                 self.hdf5filepath.unlink()
             else:
                 raise RuntimeError( f'{self.hdf5filepath} exists, not clobber.' )
 
-        self.maintable = { k: [] for k in OutputFile.col_map.keys() }
+        self.maintable = { k: [] for k in self.col_map.keys() }
         self.hdf5file = h5py.File( self.hdf5filepath, 'w' )
 
+        for n, headfile, specfile, photfile in zip( range(len(self.headfiles)),
+                                                    self.headfiles,
+                                                    self.specfiles,
+                                                    self.photfiles ):
+            self.logger.info( f"Reading {n+1} of {len(self.headfiles)} : {headfile}" )
+            head = Table.read( headfile, memmap=False )
+            spechdr = Table.read( specfile, hdu=1, memmap=False )
+            photdata = Table.read( photfile, hdu=1, memmap=True )
 
-    def addsn( self, headrow, spechdr, specdata, photdata ):
+            head['SNID'] = head['SNID'].astype( numpy.int64 )
+            spechdr['SNID'] = spechdr['SNID'].astype( numpy.int64 )
+
+            self.logger.info( f"...done reading {len(head)} objects from header" )
+            self.nwrote = 0
+
+            for row in head:
+                pix = healpy.pixelfunc.ang2pix( self.nside, row['RA'], row['DEC'], lonlat=True )
+                if pix == self.pix:
+                    self.addsn( row, spechdr, specfile, photdata )
+                    self.nwrote += 1
+
+            self.logger.info( f"...{self.nwrote} of {len(head)} objects were in healpix {self.pix}" )
+
+        self.logger.info( f"Writing Parquet file for healpix {self.pix}" )
+        self.finalize()
+        self.logger.info( f"Healpix {self.pix} Done" )
+
+
+    def addsn( self, headrow, spechdr, specfile, photdata ):
         spechdrrows = spechdr[ spechdr['SNID'] == headrow['SNID'] ]
         # Irritatingly, the last call will return different types if there
         #   is only one row vs. multiple rows
@@ -123,15 +168,15 @@ class OutputFile:
 
         nmjds = len( spechdrrows )
         if nmjds == 0:
-            _logger.warning( f"No mjds for object {headrow['SNID']}" )
+            self.logger.warning( f"No mjds for object {headrow['SNID']}" )
             return
 
         hdf5group = self.hdf5file.create_group( str( headrow['SNID'] ) )
         photgroup = hdf5group.create_group( 'photometry' )
-        
+
         # Extract (most of) the main table data
 
-        for key, val in OutputFile.col_map.items():
+        for key, val in self.col_map.items():
             if val[1] is not None:
                 if val[1] not in headrow.keys():
                     if len(val) < 3:
@@ -139,7 +184,7 @@ class OutputFile:
                     actualval = val[2]
                 else:
                     actualval = headrow[ val[1] ]
-                if val[1] in OutputFile.trims:
+                if val[1] in self.trims:
                     self.maintable[key].append( actualval.strip() )
                 else:
                     self.maintable[key].append( actualval )
@@ -149,13 +194,13 @@ class OutputFile:
         # Get out the model params
 
         modelname = headrow['SIM_MODEL_NAME'].strip()
-        params = dict( OutputFile.general_params )
-        if modelname in OutputFile.model_params.keys():
-            params.update( OutputFile.model_params[ modelname ] )
+        params = dict( self.general_params )
+        if modelname in self.model_params.keys():
+            params.update( self.model_params[ modelname ] )
         else:
-            if modelname not in OutputFile.seen_unknown_models:
-                _logger.warning( f"Unknown model {modelname}, just saving general parameters" )
-                OutputFile.seen_unknown_models.add( modelname )
+            if modelname not in self.seen_unknown_models:
+                self.logger.warning( f"Unknown model {modelname}, just saving general parameters" )
+                self.seen_unknown_models.add( modelname )
         self.maintable['model_param_names'][-1] = list( params.keys() )
         self.maintable['model_param_values'][-1] = [ headrow[v] for v in params.values() ]
 
@@ -176,7 +221,7 @@ class OutputFile:
             h5mags[band] = photgroup.create_group( band.strip() )
             h5mags[band].create_dataset( 'MJD', data=photmjds[ band ] )
             h5mags[band].create_dataset( 'MAG', data=photdata[ band ] )
-            
+
         # Extract all the spectra
         # Going to assume that the lambdamin, lambdamax, and lambdabin
         # are the same for all dates for a given object
@@ -187,8 +232,10 @@ class OutputFile:
         flam = numpy.empty( ( nmjds, nlambdas ), dtype=numpy.float32 )
 
         # The -1 is because FITS indexes are 1-offset
+        specdata = Table.read( specfile, hdu=2, memmap=True )
         for i, headrow in enumerate(spechdrrows):
-            flam[ i, : ] = specdata[ headrow['PTRSPEC_MIN']-1 : headrow['PTRSPEC_MAX'] ]['SIM_FLAM']
+            specsubdata = specdata[ headrow['PTRSPEC_MIN']-1 : headrow['PTRSPEC_MAX'] ]
+            flam[ i, : ] = specsubdata['SIM_FLAM']
 
         h5mjds = hdf5group.create_dataset( 'mjd', data=spechdrrows['MJD'] )
         h5lambdas = hdf5group.create_dataset( 'lambda', data=lambdas )
@@ -205,11 +252,62 @@ class OutputFile:
 
 
     def finalize( self ):
-        maintable_schema = pyarrow.schema( { k: OutputFile.col_map[k][0] for k in OutputFile.col_map.keys() } )
+        maintable_schema = pyarrow.schema( { k: self.col_map[k][0] for k in self.col_map.keys() } )
         self.hdf5file.close()
         pyarrowtable = pyarrow.table( self.maintable, schema=maintable_schema )
         pyarrow.parquet.write_table( pyarrowtable, self.pqfilepath )
 
+
+# ======================================================================
+
+def collect_files( directories ):
+    headfiles = []
+    specfiles = []
+    photfiles = []
+
+    for direc in directories:
+        direc = pathlib.Path( direc )
+        localheadfiles = list( direc.glob( '*HEAD.FITS.gz' ) )
+        headfiles.extend( localheadfiles )
+
+    headre = re.compile( '^(.*)HEAD\.FITS\.gz' )
+    for headfile in headfiles:
+        direc = headfile.parent
+        match = headre.search( headfile.name )
+        if match is None:
+            raise ValueError( f"Failed to parse {headfile.name} for *HEAD.FITS.gz" )
+        specfile = direc / f"{match.group(1)}SPEC.FITS"
+        photfile = direc / f"{match.group(1)}PHOT.FITS.gz"
+        if not headfile.is_file():
+            raise FileNotFoundError( f"Can't read {headfile}" )
+        if not specfile.is_file():
+            raise FileNotFoundError( f"Can't read {specfile}" )
+        if not photfile.is_file():
+            raise FileNotFoundError( f"Can't read {photfile}" )
+        specfiles.append( specfile )
+        photfiles.append( photfile )
+
+    return headfiles, photfiles, specfiles
+
+# ======================================================================
+
+def find_healpix( headfiles, nside ):
+    headfiledata = {}
+    allpix = []
+
+    _logger.info( f'Reading {len(headfiles)} SNANA HEAD files to find healpix' )
+
+    for headfile in headfiles:
+        _logger.info( f"Reading {headfile}" )
+
+        head = Table.read( headfile, memmap=False )
+        _logger.info( f"...done reading, processing {len(head)} objects." )
+        for row in head:
+            pix = healpy.pixelfunc.ang2pix( nside, row['RA'], row['DEC'], lonlat=True )
+            if pix not in allpix:
+                allpix.append( pix )
+
+    return allpix
 
 # ======================================================================
 
@@ -220,6 +318,11 @@ def main():
     parser = argparse.ArgumentParser( formatter_class=CustomFormatter,
                                       description="""
 Convert SNANA FITS files to Parquet+HDF5 files for DESC+Roman imsim.
+
+Will launch one process for each healpix that it needs to write, so make
+sure that you have at least that many plus one (for the master process)
+CPUs available.  Run with -j to just count the healpix (a relatively
+fast operation) to figure this number out.
 
 It will read all the *.HEAD.FITS.gz, *.PHOT.FITS.gz, and *.SPEC.FITS.gz
 files from all the directories given with the -d argument.  It will
@@ -264,6 +367,8 @@ have spectra at all.
     parser.add_argument( '--verbose', action='store_true', default=False,
                          help="Set log level to DEBUG (default INFO)" )
     parser.add_argument( '-c', '--clobber', default=False, action='store_true', help="Overwrite existing files?" )
+    parser.add_argument( '-j', '--just-count-healpix', default=False, action='store_true',
+                         help="Only read HEAD files to count healpix, don't do translation" )
     args = parser.parse_args()
 
     if args.verbose:
@@ -271,99 +376,36 @@ have spectra at all.
 
     outdir = pathlib.Path( args.outdir )
 
-    # All input files
-    headfiles = []
-    specfiles = []
-    photfiles = []
-
-    # Output files (OutputFile objects), indexed by healpix
-    outputfiles = {}
-
-    # Collect all the head and spec files
-
-    for direc in args.directories:
-        direc = pathlib.Path( direc )
-        localheadfiles = list( direc.glob( '*HEAD.FITS.gz' ) )
-        headfiles.extend( localheadfiles )
-
-    headre = re.compile( '^(.*)HEAD\.FITS\.gz' )
-    for headfile in headfiles:
-        direc = headfile.parent
-        match = headre.search( headfile.name )
-        if match is None:
-            raise ValueError( f"Failed to parse {headfile.name} for *HEAD.FITS.gz" )
-        specfile = direc / f"{match.group(1)}SPEC.FITS.gz"
-        photfile = direc / f"{match.group(1)}PHOT.FITS.gz"
-        if not headfile.is_file():
-            raise FileNotFoundError( f"Can't read {headfile}" )
-        if not specfile.is_file():
-            raise FileNotFoundError( f"Can't read {specfile}" )
-        if not photfile.is_file():
-            raise FileNotFoundError( f"Can't read {photfile}" )
-        specfiles.append( specfile )
-        photfiles.append( photfile )
+    headfiles, photfiles, specfiles = collect_files( args.directories )
 
     # Make one pass through the HEAD files to figure out which healpix
-    # we need, and open all the HDF5 files.  (TODO: this may not
-    # scale, keeping all of the HDF5 files open at once.  I'm hoping
-    # it'll be fine, but if we run out of file descriptors, we'll have
-    # to be more clever.  For 20 sq deg, with each healpix being (about)
-    # 1.8²=~3 sq deg, this won't be a problem.)
+    # we need.  
 
-    _logger.info( "Reading all HEAD files to determine existing healpix" )
-    for headfile in headfiles:
-        _logger.debug( f"Reading {headfile}" )
-        head = Table.read( headfile, memmap=False )
-        head['SNID'] = head['SNID'].astype( numpy.int64 )
-        if len(head) == 0:
-            _logger.warning( f"{headfile.name} had 0 length, skipping it" )
-            continue
-        for row in head:
-            pix = healpy.pixelfunc.ang2pix( args.nside, row['RA'], row['DEC'], lonlat=True )
-            if pix not in outputfiles.keys():
-                outputfiles[pix] = OutputFile( pix, outdir, clobber=args.clobber )
+    healpix = find_healpix( headfiles, args.nside ) # , sharedmanager )
 
-    _logger.info( f"Found {len(outputfiles)} different healpix" )
+    if args.just_count_healpix:
+        _logger.info( f"Found {len(healpix)} different healpix; stopping." )
+        return
+    else:
+        _logger.info( f"Found {len(healpix)} different healpix, launching that many processes." )
 
-    _logger.debug( f'Headfiles: {[headfiles]}' )
-    _logger.debug( f'Photfiles: {[specfiles]}' )
+    # Launch a process for each healpix
+    # TODO: make this a pool instead and make the
+    # number of processes an argument.
 
-    # Now go through all of the HEAD/SPEC files, adding the relevant
-    # data for each object to the correct OutputFile (based on healpix)
+    procs = []
+    for pix in healpix:
+        hpp = HealPixProcessor( pix, args.nside, outdir, headfiles, photfiles, specfiles, args.clobber )
+        proc = multiprocessing.Process( target=hpp.go )
+        proc.start()
+        procs.append( proc )
 
-    _logger.info( f'Reading {len(headfiles)} SNANA HEAD/SPEC files' )
+    # Wait for all the processes to finish
 
-    for headfile, specfile, photfile in zip( headfiles, specfiles, photfiles ):
-        _logger.info( f"Reading {headfile}" )
+    for proc in procs:
+        proc.join()
 
-        head = Table.read( headfile, memmap=False )
-        spechdr = Table.read( specfile, hdu=1, memmap=False )
-        specdata = Table.read( specfile, hdu=2, memmap=False )
-        photdata = Table.read( photfile, hdu=1, memmap=False )
-
-        head['SNID'] = head['SNID'].astype( numpy.int64 )
-        spechdr['SNID'] = spechdr['SNID'].astype( numpy.int64 )
-
-        _logger.info( f"...done reading, processing {len(head)} objects." )
-        for row in head:
-            # phi = numpy.radians( 360. - row['RA'] )
-            # theta = numpy.radians( 90. - row['DEC'] )
-            # if ( theta < 0 ) or ( theta > numpy.pi ):
-            #     raise ValueError( f'Bad dec for {snid} : {row["DEC"]}' )
-            # if ( phi >= 2*numpy.pi ): phi -= 2*numpy.pi
-            # if ( phi < 0 ): phi += 2*numpy.pi
-            # pix = healpy.pixelfunc.ang2pix( args.nside, theta, phi )
-
-            pix = healpy.pixelfunc.ang2pix( args.nside, row['RA'], row['DEC'], lonlat=True )
-
-            outputfiles[pix].addsn( row, spechdr, specdata, photdata )
-
-    # Close out all the files
-
-    for pix, outputfile in outputfiles.items():
-        outputfile.finalize()
-
-    _logger.info( "Done." )
+    _logger.info( "All done." )
 
 # ======================================================================
 
