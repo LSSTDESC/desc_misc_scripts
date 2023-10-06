@@ -461,17 +461,6 @@ file).  The structure under that is:
      any processing of the SED.  This field is redundant with the
      previous two files, as magcor_<band> = mag_<band> - synmag_<band>
 
-  photometry: a group that contains one subgroup for each band
-     <band>: a group whose name specifies the band of the photometrey
-        <mjd>: a dataset, a ( nphot ) array with mjds
-        <mag>: a dataset, a ( nphot ) array with magnitudes
-
-The mjds of photometry are not necessarily the same as the mjds of
-spectroscopy (which is why the group structure is what it is); in
-general, there will be more epochs with photometry, as epochs that have
-effectively 0 flux (indicated by a very large magnitude, over 90) don't
-have spectra at all.
-
 """ )
     parser.add_argument( '-d', '--directories', nargs='+', required=True,
                          help="Directories to find the SNANA data files (HEAD, PHOT, SPEC)" )
