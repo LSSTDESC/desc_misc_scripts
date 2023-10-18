@@ -286,6 +286,10 @@ class HealPixProcessor:
         for band in bands:
             h5mags[band] = hdf5group.create_dataset( f'mag_{band}', data=magdata[f'SIM_MAGOBS_{band}'] )
             h5synmags[band] = hdf5group.create_dataset( f'synmag_{band}', data=magdata[f'SIM_SYNMAG_{band}'] )
+            magcor = magdata[f'SIM_MAGOBS_{band}'] - magdata[f'SIM_SYNMAG_{band}']
+            if numpy.any( ( magcor < -0.2 ) | ( magcor > 0.2 ) ):
+                # w = numpy.where( ( magcor < -0.2 ) | ( magcor > 0.2 ) )
+                self.logger.warning( f'Band {band}, SNID {headrow["SNID"]} has some extreme magcors!' )
             h5magcor[band] = hdf5group.create_dataset(
                 f'magcor_{band}',
                 data=magdata[f'SIM_MAGOBS_{band}'] - magdata[f'SIM_SYNMAG_{band}']
