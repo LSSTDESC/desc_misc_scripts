@@ -71,6 +71,7 @@ class HealPixProcessor:
                 'ra': ( pyarrow.float64(), 'RA' ),
                 'dec': ( pyarrow.float64(), 'DEC' ),
                 'host_id': ( pyarrow.int64(), 'HOSTGAL_OBJID' ),
+                'gentype': ( pyarrow.int16(), 'SIM_TYPE_INDEX' ),
                 'model_name': ( pyarrow.string(), 'SIM_MODEL_NAME' ),
                 'start_mjd': ( pyarrow.float32(), None ),
                 'end_mjd': ( pyarrow.float32(), None ),
