@@ -116,7 +116,7 @@ class HealPixProcessor:
 
         self.logger = logging.getLogger( str(pix) )
         self.logger.propagate = False
-        logout = logging.FileHandler( f'{pix}.log' )
+        logout = logging.FileHandler( f'snana_to_pq+hdf5_healpix_{pix}.log' )
         formatter = logging.Formatter( f'[%(asctime)s - %(levelname)s] - %(message)s', datefmt='%Y-%m-%d %H:%M:%S' )
         logout.setFormatter( formatter )
         self.logger.addHandler( logout )
