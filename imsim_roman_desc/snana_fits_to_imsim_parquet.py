@@ -494,7 +494,12 @@ file).  The structure under that is:
     healpix = find_healpix( headfiles, args.nside ) # , sharedmanager )
 
     if args.just_count_healpix:
-        _logger.info( f"Found {len(healpix)} different healpix; stopping." )
+        strio = io.StringIO()
+        strio.write( f"Found {len(healpix)} different healpix; stopping.\n" )
+        strio.write( f"Run with {len(healpix)+1} cpus per task and {3*(len(healpix)+1)} GB of memory\n" )
+        strio.write( f"#SBATCH --cpus-per-task={len(healpix)+1}\n" )
+        strio.write( f"#SBATCH --mem={3*(len(healpix)+1)}G\n" )
+        _logger.info( strio.getvalue() )
         return
     else:
         _logger.info( f"Found {len(healpix)} different healpix, launching that many processes." )
