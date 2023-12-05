@@ -277,6 +277,17 @@ class HealPixProcessor:
             flam[ i, : ] = specsubdata['SIM_FLAM']
         specdata = None
 
+        # ****
+        # HACK ALERT -- Some of the flams were coming up with NaN.
+        # This was causing trouble down the line.  For now, we're going
+        # to assume that these are small enough fluxes that we can
+        # just ignore them, and set them to 0
+        wnan = ( numpy.isnan( flam ) )
+        if wnan.any():
+            _logger.warning( f"Got {wnan.sum()} NaN flam values for SN {headrow['SNID']}, setting them to zero" )
+            flam[wnan] = 0.
+        # ****
+
         # Turn these into the HDF5 data structures
 
         hdf5group = self.hdf5file.create_group( str( headrow['SNID'] ) )
